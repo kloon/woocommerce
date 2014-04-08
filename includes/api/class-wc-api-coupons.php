@@ -176,7 +176,7 @@ class WC_API_Coupons extends WC_API_Resource {
 	/**
 	 * Create a coupon
 	 *
-	 * @TODO implement in 2.2
+	 * @since 2.2
 	 * @param array $data
 	 * @return array
 	 */

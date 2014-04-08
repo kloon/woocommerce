@@ -33,7 +33,8 @@ class WC_API_Products extends WC_API_Resource {
 
 		# GET /products
 		$routes[ $this->base ] = array(
-			array( array( $this, 'get_products' ),     WC_API_Server::READABLE ),
+			array( array( $this, 'get_products' ), WC_API_Server::READABLE ),
+			array( array( $this, 'add_product' ), WC_API_Server::CREATABLE ),
 		);
 
 		# GET /products/count
@@ -41,9 +42,11 @@ class WC_API_Products extends WC_API_Resource {
 			array( array( $this, 'get_products_count' ), WC_API_Server::READABLE ),
 		);
 
-		# GET /products/<id>
+		# GET/PUT/DELETE /products/<id>
 		$routes[ $this->base . '/(?P<id>\d+)' ] = array(
 			array( array( $this, 'get_product' ),  WC_API_Server::READABLE ),
+			array( array( $this, 'edit_product' ),  WC_API_Server::EDITABLE ),
+			array( array( $this, 'delete_product' ),  WC_API_Server::DELETABLE ),
 		);
 
 		# GET /products/<id>/reviews
@@ -86,6 +89,294 @@ class WC_API_Products extends WC_API_Resource {
 		$this->server->add_pagination_headers( $query );
 
 		return array( 'products' => $products );
+	}
+
+	/**
+	 * Add a new product
+	 *
+	 * @since 2.2
+	 * @param array $data posted data
+	 * @return array
+	 */
+	public function add_product( $data ) {
+		// Check permisions
+		if ( ! current_user_can( 'publish_products' ) ) {
+			return new WP_Error( 'woocommerce_api_user_cannot_create_product', __( 'You do not have permission to create products', 'woocommerce' ), array( 'status' => 401 ) );
+		}
+
+		// Check if product title is specified
+		if ( ! isset( $data['title'] ) ) {
+			return new WP_Error( 'woocommerce_api_missing_product_title', sprintf( __( 'Missing parameter %s' ), 'title' ), array( 'status' => 400 ) );
+		}
+
+		// Check product type
+		if ( ! isset( $data['type'] ) ) {
+			$data['type'] = 'simple';
+		} else {
+			if ( ! in_array( wc_clean( $data['type'] ), array_keys( wc_get_product_types() ) ) ) {
+				return new WP_Error( 'woocommerce_api_invalid_product_type', sprintf( __( 'Invalid product type - the product type must be any of these: %s', 'woocommerce' ), implode( ', ', array_keys( wc_get_product_types() ) ) ), array( 'status' => 400 ) );
+			}
+		}
+
+		$new_product = array(
+			'title'	=> wc_clean( $data['title'] ),
+			'post_status' => ( isset( $data['status'] ) ? wc_clean( $data['status'] ) : 'publish' ),
+			'post_type' => 'product',
+			'post_excerpt' => ( isset( $data['short_description'] ) ? wc_clean( $data['short_description'] ) : '' ),
+			'post_content' => ( isset( $data['description'] ) ? wc_clean( $data['description'] ) : '' ),
+			'post_author' => get_current_user_id(),
+		);
+
+		$product_id = wp_insert_post( $new_product, true );
+
+		if ( is_wp_error( $product_id ) ) {
+			return new WP_Error( 'woocommerce_api_cannot_create_product', $product_id->get_error_message(), array( 'status' => 400 ) );
+		}
+
+		// Check for featured/gallery images, upload it and set it
+		if ( isset( $data['images'] ) ) {
+			$gallery_ids = array();
+			foreach ( $data['images'] as $product_image ) {
+				if ( isset( $product_image['position'] ) && isset( $product_image['src'] ) && $product_image['position'] == 0 ) {
+					$upload = $this->upload_product_image( wc_clean( $product_image['src'] ) );
+					if ( is_wp_error( $upload ) ) {
+						return new WP_Error( 'woocommerce_api_cannot_upload_product_image', $upload->get_error_message(), array( 'status' => 400 ) );
+					}
+					$attachment_id = $this->set_product_image_as_attachment( $upload, $product_id );
+					set_post_thumbnail( $product_id, $attachment_id );
+				} else if ( isset( $product_image['src'] ) ) {
+					$upload = $this->upload_product_image( wc_clean( $product_image['src'] ) );
+					if ( is_wp_error( $upload ) ) {
+						return new WP_Error( 'woocommerce_api_cannot_upload_product_image', $upload->get_error_message(), array( 'status' => 400 ) );
+					}
+					$attachment_id = $this->set_product_image_as_attachment( $upload, $product_id );
+					$gallery_ids[] = $attachment_id;
+				}
+			}
+		}
+
+
+	}
+
+	public function save_product_meta( $post_id, $data ) {
+			// Product Type
+			if ( isset( $data['type'] ) ) {
+				wp_set_object_terms( $post_id, wc_clean( $data['type'] ), 'product_type' );
+			}
+
+			// Downloadable
+			if ( isset( $data['downloadable'] ) ) {
+				if ( $data['downloadable'] === true ) {
+					update_post_meta( $post_id, '_downloadable', 'yes' );
+				} else {
+					update_post_meta( $post_id, '_downloadable', 'no' );
+				}
+			}
+
+			// Virtual
+			if ( isset( $data['virtual'] ) ) {
+				if ( $data['virtual'] === true ) {
+					update_post_meta( $post_id, '_virtual', 'yes' );
+				} else {
+					update_post_meta( $post_id, '_virtual', 'no' );
+				}
+			}
+
+			// Regular Price
+			if ( isset( $data['regular_price'] ) ) {
+				update_post_meta( $post_id, '_regular_price', ( $data['regular_price'] === '' ) ? '' : wc_format_decimal( $data['regular_price'] ) );
+			}
+
+			// Sale Price
+			if ( isset( $data['sale_price'] ) ) {
+				update_post_meta( $post_id, '_sale_price', ( $data['sale_price'] === '' ? '' : wc_format_decimal( $data['sale_price'] ) ) );
+			}
+
+			// Tax status
+			if ( isset( $data['tax_status'] ) ) {
+				update_post_meta( $post_id, '_tax_status', wc_clean( $data['tax_status'] ) );
+			}
+
+			// Tax Class
+			if ( isset( $data['tax_class'] ) ) {
+				update_post_meta( $post_id, '_tax_class', wc_clean( $data['tax_class'] ) );
+			}
+
+			// Catalog Visibility
+			if ( isset( $data['catalog_visibility'] ) ) {
+				update_post_meta( $post_id, '_visibility', wc_clean( $data['catalog_visibility'] ) );
+			}
+
+			// Purchase Note
+			if ( isset( $data['purchase_note'] ) ) {
+				update_post_meta( $post_id, '_purchase_note', wc_clean( $data['purchase_note'] ) );
+			}
+
+			// Featured Product
+			if ( isset( $data['featured'] ) ) {
+				if ( $data['featured'] === true ) {
+					update_post_meta( $post_id, '_featured', 'yes' );
+				} else {
+					update_post_meta( $post_id, '_featured', 'no' );
+				}
+			}
+
+			// Weight
+			if ( isset( $data['weight'] ) ) {
+				update_post_meta( $post_id, '_weight', ( $data['weight'] === '' ) ? '' : wc_format_decimal( $data['weight'] ) );
+			}
+
+			// Product dimensions
+			if ( isset( $data['dimensions'] ) ) {
+				// Height
+				if ( isset( $data['dimensions']['height'] ) ) {
+					update_post_meta( $post_id, '_height', ( $data['dimensions']['height'] === '' ) ? '' : wc_format_decimal( $data['dimensions']['height'] ) );
+				}
+
+				// Width
+				if ( isset( $data['dimensions']['width'] ) ) {
+					update_post_meta( $post_id, '_width', ( $data['dimensions']['width'] === '' ) ? '' : wc_format_decimal($data['dimensions']['width'] ) );
+				}
+
+				// Length
+				if ( isset( $data['dimensions']['length'] ) ) {
+					update_post_meta( $post_id, '_length', ( $data['dimensions']['length'] === '' ) ? '' : wc_format_decimal( $data['dimensions']['length'] ) );
+				}
+			}
+
+			// Shipping class
+			if ( isset( $data['shipping_class'] ) ) {
+				wp_set_object_terms( $post_id, wc_clean( $data['shipping_class'] ), 'product_shipping_class' );
+			}
+
+			// SKU
+			if ( isset( $data['sku'] ) ) {
+				$sku_found = $wpdb->get_var( $wpdb->prepare("
+						SELECT $wpdb->posts.ID
+					    FROM $wpdb->posts
+					    LEFT JOIN $wpdb->postmeta ON ($wpdb->posts.ID = $wpdb->postmeta.post_id)
+					    WHERE $wpdb->posts.post_type = 'product'
+					    AND $wpdb->posts.post_status = 'publish'
+					    AND $wpdb->postmeta.meta_key = '_sku' AND $wpdb->postmeta.meta_value = '%s'
+					    AND $wpdb->posts.ID <> %s
+					 ", wc_clean( $data['sku'], $post_id ) ) );
+
+				if ( $sku_found ) {
+					return new WP_Error( 'woocommerce_api_product_sku_already_exists', __( 'The SKU already exists on another product' ), array( 'status' => 400 ) );
+				}
+				update_post_meta( $post_id, '_sku', wc_clean( $data['sku'] ) );
+			}
+
+			// Attributes
+			if ( isset( $data['attributes'] ) ) {
+				$attributes = array();
+				$attribute_taxonomies = wc_get_attribute_taxonomies();
+				foreach ( $data['attributes'] as $attribute ) {
+					// TODO
+				}
+			}
+
+			// Sale Price Date From
+			if ( isset( $data['sale_price_dates_from'] ) ) {
+				update_post_meta( $post_id, '_sale_price_dates_from', strtotime( $data['sale_price_dates_from'] ) );
+			}
+
+			// Sale Price Date To
+			if ( isset( $data['sale_price_dates_to'] ) ) {
+				update_post_meta( $post_id, '_sale_price_dates_to', strtotime( $data['sale_price_dates_to'] ) );
+			}
+
+			// Sold Individually
+			if ( isset( $data['sold_individually'] ) ) {
+				if ( wc_clean( $data['sold_individually'] ) === true ) {
+					update_post_meta( $post_id, '_sold_individually', 'yes' );
+				} else {
+					update_post_meta( $post_id, '_sold_individually', '' );
+				}
+			}
+
+			// Manage stock
+			if ( isset( $data['managing_stock'] ) ) {
+				if ( wc_clean( $data['managing_stock'] ) === true ) {
+					update_post_meta( $post_id, '_manage_stock', 'yes' );
+				} else {
+					update_post_meta( $post_id, '_manage_stock', 'no' );
+				}
+			}
+
+	}
+
+	/**
+	 * Upload image from URL
+	 *
+	 * @since 2.2
+	 * @param  string $image_url
+	 * @return integer attachment id
+	 */
+	public function upload_product_image( $image_url ) {
+		$file_name 		= basename( current( explode( '?', $image_url ) ) );
+		$wp_filetype 	= wp_check_filetype( $file_name, null );
+		$parsed_url 	= @parse_url( $image_url );
+
+		// Check parsed URL
+		if ( ! $parsed_url || ! is_array( $parsed_url ) ) {
+			return new WP_Error( 'woocommerce_api_invalid_product_image', sprintf( __( 'Invalid URL %s' ), $image_url ), array( 'status' => 400 ) );
+		}
+
+		// Ensure url is valid
+		$image_url = str_replace( " ", '%20', $image_url );
+
+		// Get the file
+		$response = wp_remote_get( $image_url, array(
+			'timeout' => 10
+		) );
+
+		if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) {
+			return new WP_Error( 'woocommerce_api_invalid_remote_product_image', sprintf( __( 'Error getting remote image %s' ), $image_url ), array( 'status' => 400 ) );
+		}
+
+		// Ensure we have a file name and type
+		if ( ! $wp_filetype['type'] ) {
+			$headers = wp_remote_retrieve_headers( $response );
+			if ( isset( $headers['content-disposition'] ) && strstr( $headers['content-disposition'], 'filename=' ) ) {
+				$disposition = end( explode( 'filename=', $headers['content-disposition'] ) );
+				$disposition = sanitize_file_name( $disposition );
+				$file_name   = $disposition;
+			} elseif ( isset( $headers['content-type'] ) && strstr( $headers['content-type'], 'image/' ) ) {
+				$file_name = 'image.' . str_replace( 'image/', '', $headers['content-type'] );
+			}
+			unset( $headers );
+		}
+
+		// Upload the file
+		$upload = wp_upload_bits( $file_name, '', wp_remote_retrieve_body( $response ) );
+
+		if ( $upload['error'] ) {
+			return new WP_Error( 'woocommerce_api_product_image_upload_error', $upload['error'], array( 'status' => 400 ) );
+		}
+
+		// Get filesize
+		$filesize = filesize( $upload['file'] );
+
+		if ( 0 == $filesize ) {
+			@unlink( $upload['file'] );
+			unset( $upload );
+			return new WP_Error( 'woocommerce_api_product_image_upload_file_error', __( 'Zero size file downloaded', 'woocommerce' ), array( 'status' => 400 ) );
+		}
+
+		unset( $response );
+
+		return $upload;
+	}
+
+	public function set_product_image_as_attachment( $upload, $post_id ) {
+		$info = wp_check_filetype( $upload['file'] );
+		$attachment = array(
+			'guid' => $upload['url'],
+			'post_mime_type' => $info['type'],
+		);
+		$attachment_id = wp_insert_attachment( $attachment, $upload['file'], $post_id );
+		return $attachment_id;
 	}
 
 	/**

@@ -22,6 +22,21 @@ function get_product( $the_product = false, $args = array() ) {
 }
 
 /**
+ * Get product types
+ *
+ * @since 2.2
+ * @return array
+ */
+function wc_get_product_types() {
+	return (array) apply_filters( 'product_type_selector', array(
+		'simple' 	=> __( 'Simple product', 'woocommerce' ),
+		'grouped' 	=> __( 'Grouped product', 'woocommerce' ),
+		'external' 	=> __( 'External/Affiliate product', 'woocommerce' ),
+		'variable'  => __( 'Variable product', 'woocommerce' )
+	) );
+}
+
+/**
  * Update a product's stock amount
  *
  * @param  int $product_id
