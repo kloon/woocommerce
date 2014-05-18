@@ -119,7 +119,7 @@ class WC_API_Products extends WC_API_Resource {
 		}
 
 		$new_product = array(
-			'title'	=> wc_clean( $data['title'] ),
+			'post_title'	=> wc_clean( $data['title'] ),
 			'post_status' => ( isset( $data['status'] ) ? wc_clean( $data['status'] ) : 'publish' ),
 			'post_type' => 'product',
 			'post_excerpt' => ( isset( $data['short_description'] ) ? wc_clean( $data['short_description'] ) : '' ),
